@@ -34,7 +34,8 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2], ttl=0)
+    # Reading 5 columns: Date, Day, Hours, Client, Task
+    existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4], ttl=0)
     existing_data = existing_data.dropna(how="all") 
 except Exception as e:
     st.error("Could not connect to the Google Sheet. Double-check your secrets.toml file.")
@@ -48,33 +49,35 @@ tab_dashboard, tab_entry = st.tabs([" Payroll Dashboard (Boss View)", " Log New 
 # ==========================================
 with tab_dashboard:
     if not existing_data.empty and len(existing_data) > 0:
-        # Date parsing (Includes the 'mixed' format fix for manual entries!)
-        existing_data['Date'] = pd.to_datetime(existing_data['Date'], format='mixed')
-        existing_data['Month'] = existing_data['Date'].dt.strftime('%B %Y')
+        
+        # BUG FIX: We make a copy of the data just for the dashboard. 
+        # This prevents the calculated 'Month' column from accidentally being saved to the Google Sheet!
+        dashboard_data = existing_data.copy()
+        
+        # Date parsing
+        dashboard_data['Date'] = pd.to_datetime(dashboard_data['Date'], format='mixed')
+        dashboard_data['Month'] = dashboard_data['Date'].dt.strftime('%B %Y')
         
         # --- Filters & Dynamic Pay Rate ---
         st.subheader("Payroll Filter")
         col_rate, col_period = st.columns(2)
         
         with col_rate:
-            # DYNAMIC PAY RATE: Boss can adjust this, it defaults to $35.00
             hourly_rate = st.number_input("💵 Set Hourly Rate ($)", min_value=0.0, value=35.00, step=1.00, format="%.2f")
             
         with col_period:
-            # Creates a dropdown of all available months, plus an "All Time" option
-            months_available = ["All Time"] + existing_data['Month'].unique().tolist()
+            months_available = ["All Time"] + dashboard_data['Month'].unique().tolist()
             selected_period = st.selectbox("📅 Select Pay Period", months_available)
             
         st.divider()
         
         # --- Filter the Data based on selection ---
         if selected_period == "All Time":
-            display_df = existing_data.copy()
+            display_df = dashboard_data.copy()
             chart_grouping = 'Month'
         else:
-            # Filter down to just the selected month
-            display_df = existing_data[existing_data['Month'] == selected_period].copy()
-            chart_grouping = 'Date' # If a specific month is selected, show a daily bar chart
+            display_df = dashboard_data[dashboard_data['Month'] == selected_period].copy()
+            chart_grouping = 'Date' 
             
         # --- Calculate Payout ---
         total_hours = display_df['Hours'].sum()
@@ -98,7 +101,9 @@ with tab_dashboard:
         st.bar_chart(chart_data['Hours'], color="#A50000")
         
         # --- CSV Export Button ---
-        export_df = display_df[['Date', 'Day', 'Hours']].copy()
+        # Exporting all 5 relevant columns now
+        export_cols = [col for col in ['Date', 'Day', 'Hours', 'Client', 'Task'] if col in display_df.columns]
+        export_df = display_df[export_cols].copy()
         export_df['Date'] = export_df['Date'].dt.strftime('%Y-%m-%d')
         csv_data = export_df.to_csv(index=False).encode('utf-8')
         
@@ -118,8 +123,11 @@ with tab_dashboard:
 with tab_entry:
     st.header("Log New Hours")
 
+    # A temporary list of clients to test the dropdown
+    client_list = ["Client A - Smith Case", "Client B - Doe Case", "Internal / Admin"]
+
     with st.form(key="time_entry_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns([1, 1, 1.5])
         
         with col1:
             entry_date = st.date_input("Date", value=date.today())
@@ -128,21 +136,38 @@ with tab_entry:
             
         with col2:
             hours_worked = st.number_input("Hours Worked", min_value=0.0, step=0.25, format="%.2f")
+            
+        with col3:
+            # Client Dropdown
+            client_selection = st.selectbox("Client / Case", options=client_list)
+            
+        # Text area for detailed task entry
+        task_description = st.text_area("Task(s) Completed", placeholder="E.g., Drafted rebuttal, reviewed case files, client call...")
         
         submit_button = st.form_submit_button(label="Log Hours")
 
         if submit_button:
-            if hours_worked > 0:
+            if hours_worked > 0 and task_description.strip() != "":
+                
+                # Ensuring we only write the 5 correct columns to the sheet
                 new_row = pd.DataFrame([{
                     "Date": entry_date.strftime("%Y-%m-%d"),
                     "Day": day_of_week,
-                    "Hours": hours_worked
+                    "Hours": hours_worked,
+                    "Client": client_selection,
+                    "Task": task_description
                 }])
                 
-                updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+                # If existing data has columns we don't want (like an old Month column), we filter them out before saving
+                cols_to_keep = ["Date", "Day", "Hours", "Client", "Task"]
+                clean_existing_data = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
+                
+                updated_df = pd.concat([clean_existing_data, new_row], ignore_index=True)
                 conn.update(worksheet="Log", data=updated_df)
                 
-                st.success("Hours successfully logged! Refreshing dashboard...")
+                st.success(f"Successfully logged {hours_worked} hours for {client_selection}! Refreshing dashboard...")
                 st.rerun()
-            else:
+            elif hours_worked <= 0:
                 st.warning("Please enter a valid number of hours (greater than 0).")
+            else:
+                st.warning("Please enter a brief description of the tasks completed.")
