@@ -2,7 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import date
-from openai import OpenAI
+import google.generativeai as genai
 
 # --- 1. Page Configuration & Styling ---
 st.set_page_config(page_title="VALIDOX Time Tracker", page_icon="⏱️", layout="centered")
@@ -21,29 +21,26 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize OpenAI Client (BULLETPROOF CHECK) ---
+# --- Initialize Gemini AI Client (BULLETPROOF CHECK) ---
 try:
-    # Using .get() prevents the fatal KeyError crash
-    api_key = st.secrets.get("OPENAI_API_KEY")
+    api_key = st.secrets.get("GEMINI_API_KEY")
     
     if api_key:
-        ai_client = OpenAI(api_key=api_key)
+        genai.configure(api_key=api_key)
         ai_ready = True
-        openai_error = ""
+        gemini_error = ""
     else:
         ai_ready = False
-        # This will print exactly what sections Streamlit *can* see
         seen_keys = list(st.secrets.keys())
-        openai_error = f"OPENAI_API_KEY is missing. Streamlit only sees: {seen_keys}. Ensure the OpenAI key is at the VERY TOP of your secrets file."
+        gemini_error = f"GEMINI_API_KEY is missing. Streamlit only sees: {seen_keys}. Ensure the key is at the VERY TOP of your secrets file."
 except Exception as e:
     ai_ready = False
-    openai_error = repr(e) 
+    gemini_error = repr(e) 
 
 # --- Header & Logo ---
 col1, col2 = st.columns([1, 5])
 
 with col1:
-    # Make sure "logo.png" matches the exact name of your saved image file
     st.image("logo.png", width=200) 
 
 with col2:
@@ -132,17 +129,20 @@ with tab_dashboard:
             mime="text/csv"
         )
         
-        # --- AI SUMMARIZATION SECTION ---
+        # --- AI SUMMARIZATION SECTION (GEMINI POWERED) ---
         st.divider()
         st.subheader("🤖 AI Invoice Summaries")
         
         if ai_ready:
             if st.button(f"✨ Generate AI Summaries for {selected_period}"):
-                with st.spinner("Compiling notes and generating summaries..."):
+                with st.spinner("Compiling notes and generating summaries with Gemini..."):
                     unique_clients = display_df['Client'].dropna().unique()
                     
                     if len(unique_clients) == 0:
                         st.info("No clients found for this period.")
+                    
+                    # Initialize the Gemini model
+                    model = genai.GenerativeModel('gemini-1.5-flash')
                     
                     for client_name in unique_clients:
                         client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
@@ -154,15 +154,10 @@ with tab_dashboard:
                         ai_prompt = f"You are a professional administrative assistant writing invoice descriptions. I will give you a list of rough task notes logged by an employee. Please combine these notes into a single, cohesive, formal paragraph that describes the work completed. Make it professional and concise. Do not use bullet points in your response. Here are the tasks:\n\n{task_bullet_points}"
                         
                         try:
-                            response = ai_client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[
-                                    {"role": "system", "content": "You are a helpful and professional assistant."},
-                                    {"role": "user", "content": ai_prompt}
-                                ],
-                                max_tokens=300
-                            )
-                            ai_summary = response.choices[0].message.content
+                            # Send prompt to Gemini
+                            response = model.generate_content(ai_prompt)
+                            ai_summary = response.text
+                            
                             client_hours = display_df[display_df['Client'] == client_name]['Hours'].sum()
                             
                             with st.expander(f"**{client_name}** | Total: {client_hours:.2f} hrs", expanded=True):
@@ -171,7 +166,7 @@ with tab_dashboard:
                         except Exception as e:
                             st.error(f"Failed to generate summary for {client_name}. Error: {e}")
         else:
-            st.error(f"⚠️ {openai_error}")
+            st.error(f"⚠️ {gemini_error}")
 
     else:
         st.info("No hours logged yet! Go to the 'Log New Hours' tab to get started.")
