@@ -132,13 +132,12 @@ with tab_dashboard:
 
         # --- ALTAIR CHART ---
         st.write(f"### Hourly Breakdown by Client: {selected_period}")
-        # We filter out flat rate fees for the hours chart
         hourly_chart_df = display_df[display_df['Entry Type'] == "Hourly Work"]
         
         if not hourly_chart_df.empty:
-            chart_data = hourly_chart_df.groupby(['Client', 'Status'])['Hours'].sum().reset_index()
+            chart_prep = hourly_chart_df.groupby(['Client', 'Status'])['Hours'].sum().reset_index()
             
-            bar_chart = alt.Chart(chart_data).mark_bar().encode(
+            bar_chart = alt.Chart(chart_prep).mark_bar().encode(
                 x=alt.X('Client:N', axis=alt.Axis(labelAngle=0), title=None),
                 y=alt.Y('Hours:Q', title='Total Hours'),
                 color=alt.Color('Status:N', scale=alt.Scale(domain=['Paid', 'Unpaid'], range=['#A50000', '#555555']))
@@ -162,30 +161,49 @@ with tab_dashboard:
                 st.success(f"Updated all entries for {selected_period} to Paid!")
                 st.rerun()
 
-        # AI Summary Section
+        # --- UPDATED AI INVOICE SUMMARIES (LINE-ITEM FORMAT)[cite: 1] ---
         st.divider()
-        st.subheader("🤖 AI Invoice Summaries (Hourly Work Only)")
+        st.subheader("📋 Invoice Line-Item Summaries")
+        st.write("Each hourly entry will be listed by date for easy copy-pasting.")
+        
         if ai_ready:
             try:
                 available_models = [m.name.replace('models/', '') for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 selected_model = st.selectbox("Select API Model:", available_models)
                 
-                if st.button(f"✨ Generate Summaries for {selected_period}"):
+                if st.button(f"✨ Generate Line Items for {selected_period}"):
                     model = genai.GenerativeModel(selected_model)
                     
-                    # Only summarize clients who had Hourly Work
-                    hourly_clients = hourly_chart_df['Client'].unique()
-                    
-                    if len(hourly_clients) == 0:
+                    # Only process hourly work[cite: 1]
+                    if len(hourly_chart_df) == 0:
                         st.info("No hourly tasks found to summarize for this period.")
+                    
+                    for client_name in hourly_chart_df['Client'].unique():
+                        client_entries = hourly_chart_df[hourly_chart_df['Client'] == client_name].sort_values(by='Date')
                         
-                    for client_name in hourly_clients:
-                        tasks = hourly_chart_df[hourly_chart_df['Client'] == client_name]['Task'].tolist()
-                        task_str = "\n".join([str(t) for t in tasks])
-                        prompt = f"Combine these task notes into a professional invoice summary paragraph for {client_name}. No bullets: {task_str}"
+                        # Prepare raw data for AI formatting[cite: 1]
+                        data_to_format = ""
+                        for _, row in client_entries.iterrows():
+                            formatted_date = row['Date'].strftime('%m/%d/%Y')
+                            data_to_format += f"Date: {formatted_date} | Hours: {row['Hours']} | Task: {row['Task']}\n"
+                        
+                        # Structured prompt for line-item generation[cite: 1]
+                        prompt = (
+                            f"You are a billing assistant. Please format the following work entries for {client_name} "
+                            "into professional invoice line items. For each entry, provide exactly one line. "
+                            "Format each line as: [Date] - [Hours] hours - [Description]. "
+                            "The description should be a more professional version of the 'Task' provided. "
+                            "Do not include headers, intros, or summaries. Just the lines.\n\n"
+                            f"{data_to_format}"
+                        )
+                        
                         response = model.generate_content(prompt)
-                        with st.expander(f"**{client_name}**"):
-                            st.write(response.text)
+                        
+                        with st.expander(f"**Invoice Ready: {client_name}**", expanded=True):
+                            # Displaying in a code block makes it easier to copy without formatting issues[cite: 1]
+                            st.code(response.text, language="text")
+                            st.caption("Highlight and copy the text above directly onto your invoice.")
+                            
             except Exception as e:
                 st.error(f"AI Error: {e}")
     else:
@@ -196,8 +214,6 @@ with tab_dashboard:
 # ==========================================
 with tab_entry:
     st.header("Log New Work")
-    
-    # Place the toggle OUTSIDE the form so it dynamically changes the UI instantly
     entry_type = st.radio("Compensation Type", ["Hourly Work", "Flat Rate Fee"], horizontal=True)
     st.divider()
     
@@ -209,7 +225,6 @@ with tab_entry:
         with col2:
             client_selection = st.selectbox("Client / Case", options=client_list if client_list else ["No Clients Found"])
         
-        # Dynamically change the form inputs based on the radio button choice
         if entry_type == "Hourly Work":
             hours_worked = st.number_input("Hours Worked", min_value=0.0, step=0.25)
             fee_amount = 0.0
@@ -217,7 +232,7 @@ with tab_entry:
         else:
             hours_worked = 0.0
             fee_amount = st.number_input("Flat Fee Amount ($)", min_value=0.0, step=50.0)
-            task_description = "Flat Rate Service" # Hidden from user, hardcoded for database
+            task_description = "Flat Rate Service"
             st.info("Task descriptions are not required for flat rate fees.")
 
         submit_button = st.form_submit_button(label="Save Entry")
@@ -240,11 +255,10 @@ with tab_entry:
                 
                 updated_df = pd.concat([clean_existing, new_row], ignore_index=True)
                 conn.update(worksheet="Log", data=updated_df)
-                
                 st.success(f"Successfully logged {entry_type} for {client_selection}!")
                 st.rerun()
             else:
-                st.warning("Please fill out all required fields with a value greater than 0.")
+                st.warning("Please fill out all required fields.")
 
 # ==========================================
 # TAB 3: CLIENT MANAGEMENT
