@@ -1,10 +1,12 @@
 import streamlit as st
+import altair as alt
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import date
 import google.generativeai as genai
 
 # --- 1. Page Configuration & Styling ---
+# This MUST be the very first Streamlit command
 st.set_page_config(page_title="VALIDOX Time Tracker", page_icon="⏱️", layout="centered")
 
 st.markdown("""
@@ -21,7 +23,30 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize Gemini AI Client ---
+# --- 2. PIN CODE AUTHENTICATION ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image("logo.png", width=150)
+        st.write("### 🔒 Secure App Login")
+        pin_input = st.text_input("Enter PIN Code", type="password")
+        
+        if st.button("Unlock"):
+            # Fetch the PIN from your secrets. If it can't find it, it defaults to "1234"
+            correct_pin = str(st.secrets.get("APP_PIN", "1234"))
+            if pin_input == correct_pin:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect PIN. Please try again.")
+    
+    # st.stop() halts all execution here. Nothing below this line runs until unlocked.
+    st.stop()
+
+# --- 3. Initialize Gemini AI Client ---
 try:
     api_key = st.secrets.get("GEMINI_API_KEY")
     if api_key:
@@ -35,26 +60,23 @@ except Exception as e:
     ai_ready = False
     gemini_error = repr(e) 
 
-# --- Header & Logo ---
+# --- Header & Logo (Only visible after login) ---
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=200) 
 with col2:
     st.title("Time Tracking & Payroll")
 
-# --- 2. Establish Google Sheets Connection ---
+# --- 4. Establish Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Reading 6 columns: Date, Day, Hours, Client, Task, Status
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4, 5], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
-    # Ensure 'Status' column exists in our working dataframe
     if 'Status' not in existing_data.columns:
         existing_data['Status'] = "Unpaid"
     
-    # Read Clients data for dropdowns
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
         clients_data = clients_data.dropna(how="all")
@@ -65,7 +87,7 @@ except Exception as e:
     st.error(f"Connection Error: {e}")
     st.stop()
 
-# --- 3. Create the Tab System ---
+# --- 5. Create the Tab System ---
 tab_dashboard, tab_entry, tab_clients = st.tabs(["📊 Payroll Dashboard", "⏱️ Log New Hours", "📁 Client Management"])
 
 # ==========================================
@@ -90,7 +112,7 @@ with tab_dashboard:
         else:
             display_df = dashboard_data[dashboard_data['Month'] == selected_period].copy()
             
-        # Financial Metrics
+        # Metrics
         unpaid_hours = display_df[display_df['Status'] == "Unpaid"]['Hours'].sum()
         total_hours = display_df['Hours'].sum()
         
@@ -99,30 +121,29 @@ with tab_dashboard:
         m_col2.metric("Unpaid Hours", f"{unpaid_hours:.2f}")
         m_col3.metric("Unpaid Payout", f"${(unpaid_hours * hourly_rate):,.2f}")
 
-        # --- FIXED CHART: Hours by Client (Paid vs Unpaid) ---
+        # --- UPDATED ALTAIR CHART ---
         st.write(f"### Hours by Client: {selected_period}")
         if not display_df.empty:
-            # Group data by Client and Status[cite: 1]
-            chart_data = display_df.groupby(['Client', 'Status'])['Hours'].sum().unstack(fill_value=0)
+            # We prep the data so Altair can read it easily
+            chart_data = display_df.groupby(['Client', 'Status'])['Hours'].sum().reset_index()
             
-            # FIX: Force 'Paid' and 'Unpaid' columns to exist so colors don't crash[cite: 1]
-            for col in ["Paid", "Unpaid"]:
-                if col not in chart_data.columns:
-                    chart_data[col] = 0.0
+            # Create the custom chart
+            bar_chart = alt.Chart(chart_data).mark_bar().encode(
+                # labelAngle=0 forces the text to remain horizontal
+                x=alt.X('Client:N', axis=alt.Axis(labelAngle=0), title=None),
+                y=alt.Y('Hours:Q', title='Total Hours'),
+                color=alt.Color('Status:N', scale=alt.Scale(domain=['Paid', 'Unpaid'], range=['#A50000', '#555555']))
+            ).properties(height=400)
             
-            # Reorder columns so colors are consistent (Paid=Red, Unpaid=Gray)[cite: 1]
-            chart_data = chart_data[["Paid", "Unpaid"]]
-            st.bar_chart(chart_data, color=["#A50000", "#555555"]) 
+            st.altair_chart(bar_chart, use_container_width=True)
         
         # --- FUNCTION: Mark as Paid ---
         st.divider()
         if unpaid_hours > 0:
             if st.button(f"✅ Mark all '{selected_period}' entries as Paid"):
-                # Define which rows to update based on the filter[cite: 1]
                 if selected_period == "All Time":
                     existing_data['Status'] = "Paid"
                 else:
-                    # Update only rows that match the selected Month[cite: 1]
                     month_mask = pd.to_datetime(existing_data['Date']).dt.strftime('%B %Y') == selected_period
                     existing_data.loc[month_mask, 'Status'] = "Paid"
                 
@@ -177,10 +198,9 @@ with tab_entry:
                 "Hours": hours_worked,
                 "Client": client_selection,
                 "Task": task_description,
-                "Status": "Unpaid"  # Defaults to Unpaid[cite: 1]
+                "Status": "Unpaid"
             }])
             
-            # Keep columns clean for the concat[cite: 1]
             cols_to_keep = ["Date", "Day", "Hours", "Client", "Task", "Status"]
             clean_existing = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
             
