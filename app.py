@@ -21,14 +21,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize OpenAI Client ---
-# We use a try/except block so the app doesn't crash if the key is missing or mistyped
+# --- Initialize OpenAI Client (WITH ERROR TRACKING) ---
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
     ai_client = OpenAI(api_key=api_key)
     ai_ready = True
+    openai_error = ""
 except Exception as e:
     ai_ready = False
+    # This captures the exact system error
+    openai_error = repr(e) 
 
 # --- Header & Logo ---
 col1, col2 = st.columns([1, 5])
@@ -43,11 +45,9 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Read Log data
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
-    # Read Clients data
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
         clients_data = clients_data.dropna(how="all")
@@ -124,34 +124,28 @@ with tab_dashboard:
             mime="text/csv"
         )
         
-        # --- NEW: AI SUMMARIZATION SECTION ---
+        # --- AI SUMMARIZATION SECTION ---
         st.divider()
         st.subheader("🤖 AI Invoice Summaries")
         
         if ai_ready:
             if st.button(f"✨ Generate AI Summaries for {selected_period}"):
                 with st.spinner("Compiling notes and generating summaries..."):
-                    # Get unique clients for the selected period
                     unique_clients = display_df['Client'].dropna().unique()
                     
                     if len(unique_clients) == 0:
                         st.info("No clients found for this period.")
                     
                     for client_name in unique_clients:
-                        # Get all tasks for this specific client
                         client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
                         
                         if not client_tasks:
                             continue
                             
-                        # Format tasks into a bulleted list for the AI to read
                         task_bullet_points = "\n".join([f"- {task}" for task in client_tasks])
-                        
-                        # The Prompt that tells the AI exactly what to do
                         ai_prompt = f"You are a professional administrative assistant writing invoice descriptions. I will give you a list of rough task notes logged by an employee. Please combine these notes into a single, cohesive, formal paragraph that describes the work completed. Make it professional and concise. Do not use bullet points in your response. Here are the tasks:\n\n{task_bullet_points}"
                         
                         try:
-                            # Send the prompt to OpenAI (using the fast, cost-effective gpt-4o-mini model)
                             response = ai_client.chat.completions.create(
                                 model="gpt-4o-mini",
                                 messages=[
@@ -160,21 +154,18 @@ with tab_dashboard:
                                 ],
                                 max_tokens=300
                             )
-                            
-                            # Extract the text the AI wrote
                             ai_summary = response.choices[0].message.content
-                            
-                            # Calculate total hours for this client so the boss has context
                             client_hours = display_df[display_df['Client'] == client_name]['Hours'].sum()
                             
-                            # Display in a clean, expandable box
                             with st.expander(f"**{client_name}** | Total: {client_hours:.2f} hrs", expanded=True):
                                 st.write(ai_summary)
                                 
                         except Exception as e:
                             st.error(f"Failed to generate summary for {client_name}. Error: {e}")
         else:
-            st.warning("⚠️ Cannot connect to OpenAI. Please ensure your OPENAI_API_KEY is properly set in the Streamlit Secrets.")
+            # THIS WILL NOW SHOW US THE EXACT ERROR
+            st.error(f"⚠️ Cannot connect to OpenAI. Internal Error: {openai_error}")
+            st.info("Please ensure your OPENAI_API_KEY is properly set in the Streamlit Cloud Secrets.")
 
     else:
         st.info("No hours logged yet! Go to the 'Log New Hours' tab to get started.")
