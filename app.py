@@ -46,15 +46,15 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Now reading 6 columns: Date, Day, Hours, Client, Task, Status
+    # Reading 6 columns: Date, Day, Hours, Client, Task, Status
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4, 5], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
-    # Ensure 'Status' column exists if the sheet is empty
+    # Ensure 'Status' column exists in our working dataframe
     if 'Status' not in existing_data.columns:
         existing_data['Status'] = "Unpaid"
     
-    # Read Clients data
+    # Read Clients data for dropdowns
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
         clients_data = clients_data.dropna(how="all")
@@ -90,35 +90,47 @@ with tab_dashboard:
         else:
             display_df = dashboard_data[dashboard_data['Month'] == selected_period].copy()
             
-        # Metrics
+        # Financial Metrics
         unpaid_hours = display_df[display_df['Status'] == "Unpaid"]['Hours'].sum()
         total_hours = display_df['Hours'].sum()
         
         m_col1, m_col2, m_col3 = st.columns(3)
         m_col1.metric("Total Hours", f"{total_hours:.2f}")
-        m_col2.metric("Unpaid Hours", f"{unpaid_hours:.2f}", delta_color="inverse")
+        m_col2.metric("Unpaid Hours", f"{unpaid_hours:.2f}")
         m_col3.metric("Unpaid Payout", f"${(unpaid_hours * hourly_rate):,.2f}")
 
-        # --- UPDATED CHART: Hours by Client (Paid vs Unpaid) ---
+        # --- FIXED CHART: Hours by Client (Paid vs Unpaid) ---
         st.write(f"### Hours by Client: {selected_period}")
         if not display_df.empty:
+            # Group data by Client and Status[cite: 1]
             chart_data = display_df.groupby(['Client', 'Status'])['Hours'].sum().unstack(fill_value=0)
-            st.bar_chart(chart_data, color=["#A50000", "#555555"]) # Red for Paid/Unpaid depending on alphabet
+            
+            # FIX: Force 'Paid' and 'Unpaid' columns to exist so colors don't crash[cite: 1]
+            for col in ["Paid", "Unpaid"]:
+                if col not in chart_data.columns:
+                    chart_data[col] = 0.0
+            
+            # Reorder columns so colors are consistent (Paid=Red, Unpaid=Gray)[cite: 1]
+            chart_data = chart_data[["Paid", "Unpaid"]]
+            st.bar_chart(chart_data, color=["#A50000", "#555555"]) 
         
         # --- FUNCTION: Mark as Paid ---
         st.divider()
         if unpaid_hours > 0:
             if st.button(f"✅ Mark all '{selected_period}' entries as Paid"):
-                # Update the status in the main dataframe
-                mask = (existing_data['Client'].isin(display_df['Client'])) & \
-                       (pd.to_datetime(existing_data['Date']).dt.strftime('%B %Y') == selected_period if selected_period != "All Time" else True)
+                # Define which rows to update based on the filter[cite: 1]
+                if selected_period == "All Time":
+                    existing_data['Status'] = "Paid"
+                else:
+                    # Update only rows that match the selected Month[cite: 1]
+                    month_mask = pd.to_datetime(existing_data['Date']).dt.strftime('%B %Y') == selected_period
+                    existing_data.loc[month_mask, 'Status'] = "Paid"
                 
-                existing_data.loc[mask, 'Status'] = "Paid"
                 conn.update(worksheet="Log", data=existing_data)
-                st.success("Updated all entries to Paid!")
+                st.success(f"Updated all entries for {selected_period} to Paid!")
                 st.rerun()
 
-        # AI Summary Section (Kept from previous steps)
+        # AI Summary Section
         st.divider()
         st.subheader("🤖 AI Invoice Summaries")
         if ai_ready:
@@ -130,7 +142,9 @@ with tab_dashboard:
                     model = genai.GenerativeModel(selected_model)
                     for client_name in display_df['Client'].unique():
                         tasks = display_df[display_df['Client'] == client_name]['Task'].tolist()
-                        response = model.generate_content(f"Summarize these tasks professionally for an invoice: {tasks}")
+                        task_str = "\n".join([str(t) for t in tasks])
+                        prompt = f"Combine these task notes into a professional invoice summary paragraph for {client_name}. No bullets: {task_str}"
+                        response = model.generate_content(prompt)
                         with st.expander(f"**{client_name}**"):
                             st.write(response.text)
             except Exception as e:
@@ -163,9 +177,14 @@ with tab_entry:
                 "Hours": hours_worked,
                 "Client": client_selection,
                 "Task": task_description,
-                "Status": "Unpaid"  # NEW: Defaults to Unpaid
+                "Status": "Unpaid"  # Defaults to Unpaid[cite: 1]
             }])
-            updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+            
+            # Keep columns clean for the concat[cite: 1]
+            cols_to_keep = ["Date", "Day", "Hours", "Client", "Task", "Status"]
+            clean_existing = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
+            
+            updated_df = pd.concat([clean_existing, new_row], ignore_index=True)
             conn.update(worksheet="Log", data=updated_df)
             st.success(f"Logged hours for {client_selection}!")
             st.rerun()
@@ -184,7 +203,6 @@ with tab_clients:
         new_c = st.text_input("Client Name")
         if st.form_submit_button("Add") and new_c:
             new_client_df = pd.DataFrame([{"Client Name": new_c}])
-            # Append logic for client sheet
             updated_clients = pd.concat([pd.DataFrame(client_list, columns=["Client Name"]), new_client_df])
             conn.update(worksheet="Clients", data=updated_clients)
             st.success("Added!")
