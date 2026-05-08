@@ -142,8 +142,8 @@ with tab_dashboard:
                     if len(unique_clients) == 0:
                         st.info("No clients found for this period.")
                     
-                    # UPDATED: Use 'gemini-1.5-flash-latest' to resolve 404 errors
-                    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                    # UPDATED: We use the universally supported gemini-pro model
+                    model = genai.GenerativeModel('gemini-pro')
                     
                     for client_name in unique_clients:
                         client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
