@@ -6,7 +6,6 @@ from datetime import date
 import google.generativeai as genai
 
 # --- 1. Page Configuration & Styling ---
-# This MUST be the very first Streamlit command
 st.set_page_config(page_title="VALIDOX Time Tracker", page_icon="⏱️", layout="centered")
 
 st.markdown("""
@@ -35,15 +34,12 @@ if not st.session_state.authenticated:
         pin_input = st.text_input("Enter PIN Code", type="password")
         
         if st.button("Unlock"):
-            # Fetch the PIN from your secrets. If it can't find it, it defaults to "1234"
             correct_pin = str(st.secrets.get("APP_PIN", "1234"))
             if pin_input == correct_pin:
                 st.session_state.authenticated = True
                 st.rerun()
             else:
                 st.error("Incorrect PIN. Please try again.")
-    
-    # st.stop() halts all execution here. Nothing below this line runs until unlocked.
     st.stop()
 
 # --- 3. Initialize Gemini AI Client ---
@@ -60,7 +56,7 @@ except Exception as e:
     ai_ready = False
     gemini_error = repr(e) 
 
-# --- Header & Logo (Only visible after login) ---
+# --- Header & Logo ---
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=200) 
@@ -71,11 +67,19 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4, 5], ttl=0)
+    # Now reading 8 columns to include Entry Type and Fee Amount
+    existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4, 5, 6, 7], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
+    # Retroactively fill new columns for old data so the app doesn't break
     if 'Status' not in existing_data.columns:
         existing_data['Status'] = "Unpaid"
+    if 'Entry Type' not in existing_data.columns:
+        existing_data['Entry Type'] = "Hourly Work"
+    if 'Fee Amount' not in existing_data.columns:
+        existing_data['Fee Amount'] = 0.0
+        
+    existing_data['Fee Amount'] = pd.to_numeric(existing_data['Fee Amount'], errors='coerce').fillna(0.0)
     
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
@@ -88,7 +92,7 @@ except Exception as e:
     st.stop()
 
 # --- 5. Create the Tab System ---
-tab_dashboard, tab_entry, tab_clients = st.tabs(["📊 Payroll Dashboard", "⏱️ Log New Hours", "📁 Client Management"])
+tab_dashboard, tab_entry, tab_clients = st.tabs(["📊 Payroll Dashboard", "⏱️ Log New Work", "📁 Client Management"])
 
 # ==========================================
 # TAB 1: THE BOSS'S DASHBOARD
@@ -112,34 +116,41 @@ with tab_dashboard:
         else:
             display_df = dashboard_data[dashboard_data['Month'] == selected_period].copy()
             
-        # Metrics
-        unpaid_hours = display_df[display_df['Status'] == "Unpaid"]['Hours'].sum()
+        # Hybrid Metrics Calculation
+        unpaid_df = display_df[display_df['Status'] == "Unpaid"]
+        
         total_hours = display_df['Hours'].sum()
+        unpaid_hours = unpaid_df['Hours'].sum()
+        unpaid_flat_fees = unpaid_df['Fee Amount'].sum()
+        
+        total_unpaid_payout = (unpaid_hours * hourly_rate) + unpaid_flat_fees
         
         m_col1, m_col2, m_col3 = st.columns(3)
-        m_col1.metric("Total Hours", f"{total_hours:.2f}")
-        m_col2.metric("Unpaid Hours", f"{unpaid_hours:.2f}")
-        m_col3.metric("Unpaid Payout", f"${(unpaid_hours * hourly_rate):,.2f}")
+        m_col1.metric("Total Hours Logged", f"{total_hours:.2f}")
+        m_col2.metric("Unpaid Flat Fees", f"${unpaid_flat_fees:,.2f}")
+        m_col3.metric("Total Unpaid Payout", f"${total_unpaid_payout:,.2f}")
 
-        # --- UPDATED ALTAIR CHART ---
-        st.write(f"### Hours by Client: {selected_period}")
-        if not display_df.empty:
-            # We prep the data so Altair can read it easily
-            chart_data = display_df.groupby(['Client', 'Status'])['Hours'].sum().reset_index()
+        # --- ALTAIR CHART ---
+        st.write(f"### Hourly Breakdown by Client: {selected_period}")
+        # We filter out flat rate fees for the hours chart
+        hourly_chart_df = display_df[display_df['Entry Type'] == "Hourly Work"]
+        
+        if not hourly_chart_df.empty:
+            chart_data = hourly_chart_df.groupby(['Client', 'Status'])['Hours'].sum().reset_index()
             
-            # Create the custom chart
             bar_chart = alt.Chart(chart_data).mark_bar().encode(
-                # labelAngle=0 forces the text to remain horizontal
                 x=alt.X('Client:N', axis=alt.Axis(labelAngle=0), title=None),
                 y=alt.Y('Hours:Q', title='Total Hours'),
                 color=alt.Color('Status:N', scale=alt.Scale(domain=['Paid', 'Unpaid'], range=['#A50000', '#555555']))
             ).properties(height=400)
             
             st.altair_chart(bar_chart, use_container_width=True)
+        else:
+            st.info("No hourly data to display for this period.")
         
         # --- FUNCTION: Mark as Paid ---
         st.divider()
-        if unpaid_hours > 0:
+        if len(unpaid_df) > 0:
             if st.button(f"✅ Mark all '{selected_period}' entries as Paid"):
                 if selected_period == "All Time":
                     existing_data['Status'] = "Paid"
@@ -153,7 +164,7 @@ with tab_dashboard:
 
         # AI Summary Section
         st.divider()
-        st.subheader("🤖 AI Invoice Summaries")
+        st.subheader("🤖 AI Invoice Summaries (Hourly Work Only)")
         if ai_ready:
             try:
                 available_models = [m.name.replace('models/', '') for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -161,8 +172,15 @@ with tab_dashboard:
                 
                 if st.button(f"✨ Generate Summaries for {selected_period}"):
                     model = genai.GenerativeModel(selected_model)
-                    for client_name in display_df['Client'].unique():
-                        tasks = display_df[display_df['Client'] == client_name]['Task'].tolist()
+                    
+                    # Only summarize clients who had Hourly Work
+                    hourly_clients = hourly_chart_df['Client'].unique()
+                    
+                    if len(hourly_clients) == 0:
+                        st.info("No hourly tasks found to summarize for this period.")
+                        
+                    for client_name in hourly_clients:
+                        tasks = hourly_chart_df[hourly_chart_df['Client'] == client_name]['Task'].tolist()
                         task_str = "\n".join([str(t) for t in tasks])
                         prompt = f"Combine these task notes into a professional invoice summary paragraph for {client_name}. No bullets: {task_str}"
                         response = model.generate_content(prompt)
@@ -171,43 +189,62 @@ with tab_dashboard:
             except Exception as e:
                 st.error(f"AI Error: {e}")
     else:
-        st.info("No hours logged yet.")
+        st.info("No entries logged yet.")
 
 # ==========================================
-# TAB 2: LOG NEW HOURS
+# TAB 2: LOG NEW WORK
 # ==========================================
 with tab_entry:
-    st.header("Log New Hours")
+    st.header("Log New Work")
+    
+    # Place the toggle OUTSIDE the form so it dynamically changes the UI instantly
+    entry_type = st.radio("Compensation Type", ["Hourly Work", "Flat Rate Fee"], horizontal=True)
+    st.divider()
+    
     with st.form(key="time_entry_form", clear_on_submit=True):
-        col1, col2, col3 = st.columns([1, 1, 1.5])
+        col1, col2 = st.columns(2)
         with col1:
             entry_date = st.date_input("Date", value=date.today())
             day_of_week = entry_date.strftime("%A")
         with col2:
-            hours_worked = st.number_input("Hours Worked", min_value=0.0, step=0.25)
-        with col3:
             client_selection = st.selectbox("Client / Case", options=client_list if client_list else ["No Clients Found"])
         
-        task_description = st.text_area("Task(s) Completed")
-        submit_button = st.form_submit_button(label="Log Hours")
+        # Dynamically change the form inputs based on the radio button choice
+        if entry_type == "Hourly Work":
+            hours_worked = st.number_input("Hours Worked", min_value=0.0, step=0.25)
+            fee_amount = 0.0
+            task_description = st.text_area("Task(s) Completed", placeholder="Drafted rebuttal, reviewed case files...")
+        else:
+            hours_worked = 0.0
+            fee_amount = st.number_input("Flat Fee Amount ($)", min_value=0.0, step=50.0)
+            task_description = "Flat Rate Service" # Hidden from user, hardcoded for database
+            st.info("Task descriptions are not required for flat rate fees.")
 
-        if submit_button and hours_worked > 0:
-            new_row = pd.DataFrame([{
-                "Date": entry_date.strftime("%Y-%m-%d"),
-                "Day": day_of_week,
-                "Hours": hours_worked,
-                "Client": client_selection,
-                "Task": task_description,
-                "Status": "Unpaid"
-            }])
-            
-            cols_to_keep = ["Date", "Day", "Hours", "Client", "Task", "Status"]
-            clean_existing = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
-            
-            updated_df = pd.concat([clean_existing, new_row], ignore_index=True)
-            conn.update(worksheet="Log", data=updated_df)
-            st.success(f"Logged hours for {client_selection}!")
-            st.rerun()
+        submit_button = st.form_submit_button(label="Save Entry")
+
+        if submit_button:
+            if (entry_type == "Hourly Work" and hours_worked > 0 and task_description.strip() != "") or (entry_type == "Flat Rate Fee" and fee_amount > 0):
+                new_row = pd.DataFrame([{
+                    "Date": entry_date.strftime("%Y-%m-%d"),
+                    "Day": day_of_week,
+                    "Hours": hours_worked,
+                    "Client": client_selection,
+                    "Task": task_description,
+                    "Status": "Unpaid",
+                    "Entry Type": entry_type,
+                    "Fee Amount": fee_amount
+                }])
+                
+                cols_to_keep = ["Date", "Day", "Hours", "Client", "Task", "Status", "Entry Type", "Fee Amount"]
+                clean_existing = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
+                
+                updated_df = pd.concat([clean_existing, new_row], ignore_index=True)
+                conn.update(worksheet="Log", data=updated_df)
+                
+                st.success(f"Successfully logged {entry_type} for {client_selection}!")
+                st.rerun()
+            else:
+                st.warning("Please fill out all required fields with a value greater than 0.")
 
 # ==========================================
 # TAB 3: CLIENT MANAGEMENT
