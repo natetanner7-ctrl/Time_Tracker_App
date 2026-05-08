@@ -41,22 +41,21 @@ except Exception as e:
 col1, col2 = st.columns([1, 5])
 
 with col1:
-    # Using logo.png as per repository structure[cite: 1]
+    # logo.png from the local directory[cite: 1]
     st.image("logo.png", width=200) 
 
 with col2:
     st.title("Time Tracking & Payroll")
 
 # --- 2. Establish Google Sheets Connection ---
-# Using the gsheets connection
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Reading 5 columns: Date, Day, Hours, Client, Task
+    # Reading 5 columns: Date, Day, Hours, Client, Task[cite: 1]
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
-    # Read Clients data for dynamic dropdowns
+    # Read Clients data for dynamic dropdowns[cite: 1]
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
         clients_data = clients_data.dropna(how="all")
@@ -109,7 +108,6 @@ with tab_dashboard:
         m_col1.metric(label="Total Hours", value=f"{total_hours:.2f} hrs")
         m_col2.metric(label="Total Payout Owed", value=f"${total_pay:,.2f}")
         
-        # Rendering charts based on filtered data
         if selected_period == "All Time":
             chart_data = display_df.groupby('Month')['Hours'].sum().reset_index()
             chart_data['Date_Sort'] = pd.to_datetime(chart_data['Month'])
@@ -128,14 +126,14 @@ with tab_dashboard:
         
         if ai_ready:
             if st.button(f"✨ Generate AI Summaries for {selected_period}"):
-                with st.spinner("Generating summaries with Gemini..."):
+                with st.spinner("Generating summaries with Gemini 3.1 Flash..."):
                     unique_clients = display_df['Client'].dropna().unique()
                     
                     if len(unique_clients) == 0:
                         st.info("No clients found for this period.")
                     
-                    # UPDATED: Using gemini-1.5-pro for better reliability
-                    model = genai.GenerativeModel('gemini-1.5-pro')
+                    # UPDATED: Using gemini-3.1-flash for the 2026 API[cite: 1]
+                    model = genai.GenerativeModel('gemini-3.1-flash')
                     
                     for client_name in unique_clients:
                         client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
@@ -147,8 +145,8 @@ with tab_dashboard:
                         ai_prompt = (
                             "You are a professional administrative assistant writing invoice descriptions. "
                             "Combine these raw task notes into a single, cohesive, formal paragraph describing "
-                            "the work completed. Professional and concise tone. No bullet points. "
-                            f"Tasks:\n\n{task_bullet_points}"
+                            "the work completed. Keep it professional, concise, and do not use bullet points. "
+                            f"Tasks for {client_name}:\n\n{task_bullet_points}"
                         )
                         
                         try:
@@ -194,7 +192,10 @@ with tab_entry:
                     "Client": client_selection,
                     "Task": task_description
                 }])
-                updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+                # Filter out unwanted columns before concat[cite: 1]
+                cols_to_keep = ["Date", "Day", "Hours", "Client", "Task"]
+                clean_existing_data = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
+                updated_df = pd.concat([clean_existing_data, new_row], ignore_index=True)
                 conn.update(worksheet="Log", data=updated_df)
                 st.success(f"Logged {hours_worked} hours for {client_selection}!")
                 st.rerun()
