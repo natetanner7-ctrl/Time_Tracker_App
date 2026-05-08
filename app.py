@@ -32,7 +32,7 @@ try:
     else:
         ai_ready = False
         seen_keys = list(st.secrets.keys())
-        gemini_error = f"GEMINI_API_KEY is missing. Streamlit only sees: {seen_keys}. Ensure the key is at the VERY TOP of your secrets file."
+        gemini_error = f"GEMINI_API_KEY is missing. Streamlit only sees: {seen_keys}."
 except Exception as e:
     ai_ready = False
     gemini_error = repr(e) 
@@ -50,6 +50,7 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
+    # Reading 5 columns: Date, Day, Hours, Client, Task
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
@@ -141,8 +142,8 @@ with tab_dashboard:
                     if len(unique_clients) == 0:
                         st.info("No clients found for this period.")
                     
-                    # Initialize the Gemini model
-                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    # UPDATED: Use 'gemini-1.5-flash-latest' to resolve 404 errors
+                    model = genai.GenerativeModel('gemini-1.5-flash-latest')
                     
                     for client_name in unique_clients:
                         client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
