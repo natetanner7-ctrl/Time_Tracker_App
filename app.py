@@ -41,7 +41,6 @@ except Exception as e:
 col1, col2 = st.columns([1, 5])
 
 with col1:
-    # logo.png from the local directory[cite: 1]
     st.image("logo.png", width=200) 
 
 with col2:
@@ -51,11 +50,11 @@ with col2:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Reading 5 columns: Date, Day, Hours, Client, Task[cite: 1]
+    # Reading 5 columns: Date, Day, Hours, Client, Task
     existing_data = conn.read(worksheet="Log", usecols=[0, 1, 2, 3, 4], ttl=0)
     existing_data = existing_data.dropna(how="all") 
     
-    # Read Clients data for dynamic dropdowns[cite: 1]
+    # Read Clients data for dynamic dropdowns
     try:
         clients_data = conn.read(worksheet="Clients", usecols=[0], ttl=0)
         clients_data = clients_data.dropna(how="all")
@@ -125,40 +124,57 @@ with tab_dashboard:
         st.subheader("🤖 AI Invoice Summaries")
         
         if ai_ready:
-            if st.button(f"✨ Generate AI Summaries for {selected_period}"):
-                with st.spinner("Generating summaries with Gemini 3.1 Flash..."):
-                    unique_clients = display_df['Client'].dropna().unique()
+            try:
+                # NEW: Ask Google for a list of valid models your API key has access to
+                available_models = []
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        # Clean up the internal name formatting
+                        clean_name = m.name.replace('models/', '')
+                        available_models.append(clean_name)
+                
+                if not available_models:
+                    st.error("Your API key works, but Google says your account has no access to any text generation models. Check your Google AI Studio account settings or region restrictions.")
+                else:
+                    # Create a dropdown so you can manually select a guaranteed-valid model
+                    selected_model = st.selectbox("Select API Model (Fetched directly from Google):", available_models)
                     
-                    if len(unique_clients) == 0:
-                        st.info("No clients found for this period.")
-                    
-                    # UPDATED: Using gemini-3.1-flash for the 2026 API[cite: 1]
-                    model = genai.GenerativeModel('gemini-3.1-flash')
-                    
-                    for client_name in unique_clients:
-                        client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
-                        
-                        if not client_tasks:
-                            continue
+                    if st.button(f"✨ Generate AI Summaries for {selected_period}"):
+                        with st.spinner(f"Generating summaries using {selected_model}..."):
+                            unique_clients = display_df['Client'].dropna().unique()
                             
-                        task_bullet_points = "\n".join([f"- {task}" for task in client_tasks])
-                        ai_prompt = (
-                            "You are a professional administrative assistant writing invoice descriptions. "
-                            "Combine these raw task notes into a single, cohesive, formal paragraph describing "
-                            "the work completed. Keep it professional, concise, and do not use bullet points. "
-                            f"Tasks for {client_name}:\n\n{task_bullet_points}"
-                        )
-                        
-                        try:
-                            response = model.generate_content(ai_prompt)
-                            ai_summary = response.text
-                            client_hours = display_df[display_df['Client'] == client_name]['Hours'].sum()
+                            if len(unique_clients) == 0:
+                                st.info("No clients found for this period.")
                             
-                            with st.expander(f"**{client_name}** | Total: {client_hours:.2f} hrs", expanded=True):
-                                st.write(ai_summary)
+                            # Initialize the model using your selection
+                            model = genai.GenerativeModel(selected_model)
+                            
+                            for client_name in unique_clients:
+                                client_tasks = display_df[display_df['Client'] == client_name]['Task'].dropna().tolist()
                                 
-                        except Exception as e:
-                            st.error(f"Failed to generate summary for {client_name}. Error: {e}")
+                                if not client_tasks:
+                                    continue
+                                    
+                                task_bullet_points = "\n".join([f"- {task}" for task in client_tasks])
+                                ai_prompt = (
+                                    "You are a professional administrative assistant writing invoice descriptions. "
+                                    "Combine these raw task notes into a single, cohesive, formal paragraph describing "
+                                    "the work completed. Keep it professional, concise, and do not use bullet points. "
+                                    f"Tasks for {client_name}:\n\n{task_bullet_points}"
+                                )
+                                
+                                try:
+                                    response = model.generate_content(ai_prompt)
+                                    ai_summary = response.text
+                                    client_hours = display_df[display_df['Client'] == client_name]['Hours'].sum()
+                                    
+                                    with st.expander(f"**{client_name}** | Total: {client_hours:.2f} hrs", expanded=True):
+                                        st.write(ai_summary)
+                                        
+                                except Exception as e:
+                                    st.error(f"Failed to generate summary for {client_name}. Error: {e}")
+            except Exception as e:
+                st.error(f"Failed to connect to Google's model list. Error: {e}")
         else:
             st.error(f"⚠️ {gemini_error}")
 
@@ -192,7 +208,6 @@ with tab_entry:
                     "Client": client_selection,
                     "Task": task_description
                 }])
-                # Filter out unwanted columns before concat[cite: 1]
                 cols_to_keep = ["Date", "Day", "Hours", "Client", "Task"]
                 clean_existing_data = existing_data[[c for c in cols_to_keep if c in existing_data.columns]]
                 updated_df = pd.concat([clean_existing_data, new_row], ignore_index=True)
