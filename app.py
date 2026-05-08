@@ -21,21 +21,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize OpenAI Client (WITH ERROR TRACKING) ---
+# --- Initialize OpenAI Client (BULLETPROOF CHECK) ---
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-    ai_client = OpenAI(api_key=api_key)
-    ai_ready = True
-    openai_error = ""
+    # Using .get() prevents the fatal KeyError crash
+    api_key = st.secrets.get("OPENAI_API_KEY")
+    
+    if api_key:
+        ai_client = OpenAI(api_key=api_key)
+        ai_ready = True
+        openai_error = ""
+    else:
+        ai_ready = False
+        # This will print exactly what sections Streamlit *can* see
+        seen_keys = list(st.secrets.keys())
+        openai_error = f"OPENAI_API_KEY is missing. Streamlit only sees: {seen_keys}. Ensure the OpenAI key is at the VERY TOP of your secrets file."
 except Exception as e:
     ai_ready = False
-    # This captures the exact system error
     openai_error = repr(e) 
 
 # --- Header & Logo ---
 col1, col2 = st.columns([1, 5])
 
 with col1:
+    # Make sure "logo.png" matches the exact name of your saved image file
     st.image("logo.png", width=200) 
 
 with col2:
@@ -60,7 +68,7 @@ try:
         clients_data = pd.DataFrame(columns=["Client Name"])
 
 except Exception as e:
-    st.error("Could not connect to the Google Sheet. Double-check your secrets.toml file.")
+    st.error("Could not connect to the Google Sheet. Double-check your secrets.toml file and Streamlit Cloud settings.")
     st.stop()
 
 # --- 3. Create the Tab System ---
@@ -163,9 +171,7 @@ with tab_dashboard:
                         except Exception as e:
                             st.error(f"Failed to generate summary for {client_name}. Error: {e}")
         else:
-            # THIS WILL NOW SHOW US THE EXACT ERROR
-            st.error(f"⚠️ Cannot connect to OpenAI. Internal Error: {openai_error}")
-            st.info("Please ensure your OPENAI_API_KEY is properly set in the Streamlit Cloud Secrets.")
+            st.error(f"⚠️ {openai_error}")
 
     else:
         st.info("No hours logged yet! Go to the 'Log New Hours' tab to get started.")
